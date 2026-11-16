@@ -1,0 +1,83 @@
+{
+  "_comment": "Synthetic fixture. All domains use reserved example TLDs. Shape documented in README \u00a78.2.",
+  "domains": [
+    {
+      "domain": "sender.example.com",
+      "role": "sending_domain_web",
+      "owner": "team-deliverability",
+      "port": 443,
+      "path": "/",
+      "checkHeaders": true
+    },
+    {
+      "domain": "mail.example.com",
+      "role": "webmail",
+      "owner": "team-it",
+      "port": 443,
+      "path": "/",
+      "checkHeaders": true
+    },
+    {
+      "domain": "track.example.com",
+      "role": "click_tracking",
+      "owner": "team-marketing-ops",
+      "port": 443,
+      "path": "/",
+      "checkHeaders": true
+    },
+    {
+      "domain": "links.example.net",
+      "role": "link_branding",
+      "owner": "team-marketing-ops",
+      "port": 443,
+      "path": "/",
+      "checkHeaders": true
+    },
+    {
+      "domain": "go.example.org",
+      "role": "landing_pages",
+      "owner": "team-web",
+      "port": 443,
+      "path": "/",
+      "checkHeaders": true
+    },
+    {
+      "domain": "bounce.example.com",
+      "role": "smtp_implicit_tls",
+      "owner": "team-deliverability",
+      "port": 465,
+      "checkHeaders": false,
+      "checkRedirect": false
+    },
+    {
+      "domain": "legacy.example.com",
+      "role": "legacy_preference_center",
+      "owner": "team-web",
+      "port": 443,
+      "path": "/preferences",
+      "checkHeaders": true
+    },
+    {
+      "domain": "promo.example.com",
+      "role": "campaign_microsite",
+      "owner": "team-marketing-ops",
+      "port": 443,
+      "path": "/",
+      "checkHeaders": true
+    },
+    {
+      "domain": "archive.example.com",
+      "role": "retired_microsite",
+      "owner": "team-web",
+      "enabled": false
+    },
+    {
+      "domain": "not a domain!",
+      "role": "invalid_entry_for_testing"
+    },
+    {
+      "domain": "SENDER.example.com",
+      "role": "duplicate_entry_for_testing"
+    }
+  ]
+}
