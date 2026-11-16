@@ -1,0 +1,1395 @@
+{
+  "name": "Outbound Sender Domain SSL Expiry Watchdog (dhRobin Systems)",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## n8n-outbound-sender-domain-ssl-expiry-watchdog\n**dhRobin Systems** · Daily: sender domains → DNS + SSRF guard → TLS handshake (expiry, chain trust, hostname, protocol, key) → HTTPS security headers (HSTS, CSP, X-Frame-Options, nosniff) → HTTP→HTTPS redirect → findings → Slack / webhook / HubSpot task / Notion page → audit.\n\n**Safe by default.** With no environment variables set:\n- `SANDBOX_MODE=true`: synthetic observations. **No DNS, TLS or HTTP traffic. No notifications.**\n- `DRY_RUN=true`: alerts are composed, nothing is sent or written.\n\nNeeds `NODE_FUNCTION_ALLOW_BUILTIN=dns,tls,https,http,net` for live inspection.",
+        "height": 400,
+        "width": 640,
+        "color": 5
+      },
+      "id": "319e3f26-4a0a-5272-ab10-90c63657d307",
+      "name": "Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -560,
+        -460
+      ]
+    },
+    {
+      "parameters": {
+        "content": "### Inspection scope\n- Connects to the **vetted resolved IP** with SNI/Host = domain. Private, loopback and link-local targets are refused unless `ALLOW_PRIVATE_TARGETS=true`.\n- Port 465 (implicit TLS) supported. STARTTLS on port 25/587 is **not** inspected.\n- Trust is evaluated against the Node.js CA store of the n8n host.",
+        "height": 240,
+        "width": 420,
+        "color": 6
+      },
+      "id": "37cf7b55-9475-5f7f-b11b-122772767653",
+      "name": "Inspection Notice",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        700,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 6 * * *"
+            }
+          ]
+        }
+      },
+      "id": "f2ba7817-62d9-5cce-a82c-3167a5fb83e4",
+      "name": "Daily Watchdog Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -500,
+        100
+      ],
+      "notes": "Daily at 06:00 in the workflow timezone (UTC).",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {},
+      "id": "2f13c952-3863-507d-a1ba-30a3f416dbe7",
+      "name": "Manual Test Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -500,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "8e6d3a55-3f2e-5e8f-89b3-1bb39cd0fe85",
+              "name": "config.sandboxMode",
+              "value": "={{ String($env.SANDBOX_MODE ?? 'true').trim().toLowerCase() !== 'false' }}",
+              "type": "boolean"
+            },
+            {
+              "id": "8330da54-ea76-5083-8002-d508e3ff168f",
+              "name": "config.dryRun",
+              "value": "={{ String($env.DRY_RUN ?? 'true').trim().toLowerCase() !== 'false' }}",
+              "type": "boolean"
+            },
+            {
+              "id": "a4535d1c-4600-51a8-aff5-b45c0c99a2e8",
+              "name": "config.alertChannels",
+              "value": "={{ String($env.ALERT_CHANNELS ?? 'slack').toLowerCase().split(',').map(x => x.trim()).filter(x => ['slack', 'webhook', 'hubspot', 'notion'].includes(x)) }}",
+              "type": "array"
+            },
+            {
+              "id": "06978f79-0ced-5ec8-9de0-a61a56724e63",
+              "name": "config.slackEnabled",
+              "value": "={{ !(String($env.SANDBOX_MODE ?? 'true').trim().toLowerCase() !== 'false') && String($env.ALERT_CHANNELS ?? 'slack').toLowerCase().split(',').map(x => x.trim()).filter(x => ['slack', 'webhook', 'hubspot', 'notion'].includes(x)).includes('slack') && Boolean(String($env.SLACK_WEBHOOK_URL ?? '').trim()) }}",
+              "type": "boolean"
+            },
+            {
+              "id": "869f7688-35db-575f-a801-0ffae804a2fa",
+              "name": "config.webhookEnabled",
+              "value": "={{ !(String($env.SANDBOX_MODE ?? 'true').trim().toLowerCase() !== 'false') && String($env.ALERT_CHANNELS ?? 'slack').toLowerCase().split(',').map(x => x.trim()).filter(x => ['slack', 'webhook', 'hubspot', 'notion'].includes(x)).includes('webhook') && Boolean(String($env.ALERT_WEBHOOK_URL ?? '').trim()) }}",
+              "type": "boolean"
+            },
+            {
+              "id": "23d3a938-9c95-512d-bf10-2b5732faa7b5",
+              "name": "config.hubspotEnabled",
+              "value": "={{ !(String($env.SANDBOX_MODE ?? 'true').trim().toLowerCase() !== 'false') && String($env.ALERT_CHANNELS ?? 'slack').toLowerCase().split(',').map(x => x.trim()).filter(x => ['slack', 'webhook', 'hubspot', 'notion'].includes(x)).includes('hubspot') && Boolean(String($env.HUBSPOT_PRIVATE_APP_TOKEN ?? '').trim()) }}",
+              "type": "boolean"
+            },
+            {
+              "id": "dab68e26-90b0-57cf-a675-3c3167f42c97",
+              "name": "config.notionEnabled",
+              "value": "={{ !(String($env.SANDBOX_MODE ?? 'true').trim().toLowerCase() !== 'false') && String($env.ALERT_CHANNELS ?? 'slack').toLowerCase().split(',').map(x => x.trim()).filter(x => ['slack', 'webhook', 'hubspot', 'notion'].includes(x)).includes('notion') && Boolean(String($env.NOTION_API_KEY ?? '').trim()) && Boolean(String($env.NOTION_DATABASE_ID ?? '').trim()) }}",
+              "type": "boolean"
+            },
+            {
+              "id": "a123364b-624c-5fc4-b5d1-a1653571c832",
+              "name": "config.slackPostAllClear",
+              "value": "={{ String($env.SLACK_POST_ALL_CLEAR ?? 'false').trim().toLowerCase() === 'true' }}",
+              "type": "boolean"
+            },
+            {
+              "id": "c5eb8f95-85ef-5767-82ca-ea16195fc5eb",
+              "name": "config.daysWarningThreshold",
+              "value": "={{ Math.min(365, Math.max(1, Number.isFinite(parseFloat($env.DAYS_WARNING_THRESHOLD)) ? Math.round(parseFloat($env.DAYS_WARNING_THRESHOLD)) : 30)) }}",
+              "type": "number"
+            },
+            {
+              "id": "f88e2f67-987e-5857-aa3a-67eb8bbe1790",
+              "name": "config.criticalDays",
+              "value": "={{ Math.min(90, Math.max(0, Number.isFinite(parseFloat($env.CRITICAL_DAYS)) ? Math.round(parseFloat($env.CRITICAL_DAYS)) : 7)) }}",
+              "type": "number"
+            },
+            {
+              "id": "05fb2315-6ebd-5053-bc24-dcd041b081f2",
+              "name": "config.alertMinSeverity",
+              "value": "={{ ['warning', 'critical', 'info'].includes(String($env.ALERT_MIN_SEVERITY ?? 'warning').trim().toLowerCase()) ? String($env.ALERT_MIN_SEVERITY ?? 'warning').trim().toLowerCase() : 'warning' }}",
+              "type": "string"
+            },
+            {
+              "id": "19236ce3-94cc-570c-820f-7484edbd6f73",
+              "name": "config.headerSeverity",
+              "value": "={{ ['warning', 'critical', 'info'].includes(String($env.HEADER_SEVERITY ?? 'warning').trim().toLowerCase()) ? String($env.HEADER_SEVERITY ?? 'warning').trim().toLowerCase() : 'warning' }}",
+              "type": "string"
+            },
+            {
+              "id": "b77ba26d-9f0c-517d-aa30-18e32df1f2c1",
+              "name": "config.requiredHeaders",
+              "value": "={{ String($env.REQUIRED_HEADERS ?? 'strict-transport-security,content-security-policy,x-frame-options,x-content-type-options').toLowerCase().split(',').map(x => x.trim()).filter(Boolean) }}",
+              "type": "array"
+            },
+            {
+              "id": "f31ed9eb-627c-58eb-b45d-59772896dcd0",
+              "name": "config.hstsMinMaxAge",
+              "value": "={{ Math.min(100000000, Math.max(0, Number.isFinite(parseFloat($env.HSTS_MIN_MAX_AGE)) ? Math.round(parseFloat($env.HSTS_MIN_MAX_AGE)) : 15552000)) }}",
+              "type": "number"
+            },
+            {
+              "id": "9c186673-f50d-5a88-af79-66cb433afc06",
+              "name": "config.checkHttpRedirect",
+              "value": "={{ String($env.CHECK_HTTP_REDIRECT ?? 'true').trim().toLowerCase() !== 'false' }}",
+              "type": "boolean"
+            },
+            {
+              "id": "81ed34d4-37e3-5de9-a52b-2ebfefe507d9",
+              "name": "config.domainSource",
+              "value": "={{ ['env', 'url'].includes(String($env.DOMAIN_SOURCE ?? 'env').trim().toLowerCase()) ? String($env.DOMAIN_SOURCE ?? 'env').trim().toLowerCase() : 'env' }}",
+              "type": "string"
+            },
+            {
+              "id": "9bd636a6-6508-577c-b5d0-5afcdf5f7fc1",
+              "name": "config.senderDomainsRaw",
+              "value": "={{ String($env.SENDER_DOMAINS ?? '').trim() }}",
+              "type": "string"
+            },
+            {
+              "id": "790e7def-f114-526f-9cca-28d82324e1d8",
+              "name": "config.maxDomains",
+              "value": "={{ Math.min(1000, Math.max(1, Number.isFinite(parseFloat($env.MAX_DOMAINS)) ? Math.round(parseFloat($env.MAX_DOMAINS)) : 200)) }}",
+              "type": "number"
+            },
+            {
+              "id": "44001bfe-be2c-5667-a140-232adb5a6d46",
+              "name": "config.timeoutMs",
+              "value": "={{ Math.min(30000, Math.max(2000, Number.isFinite(parseFloat($env.INSPECTION_TIMEOUT_MS)) ? Math.round(parseFloat($env.INSPECTION_TIMEOUT_MS)) : 10000)) }}",
+              "type": "number"
+            },
+            {
+              "id": "b5ff665d-9311-59fd-8c61-343ec4b5224d",
+              "name": "config.concurrency",
+              "value": "={{ Math.min(20, Math.max(1, Number.isFinite(parseFloat($env.INSPECTION_CONCURRENCY)) ? Math.round(parseFloat($env.INSPECTION_CONCURRENCY)) : 5)) }}",
+              "type": "number"
+            },
+            {
+              "id": "ef9c08b3-e085-5558-a73c-a8368ad7f3c1",
+              "name": "config.maxRedirects",
+              "value": "={{ Math.min(10, Math.max(0, Number.isFinite(parseFloat($env.MAX_REDIRECTS)) ? Math.round(parseFloat($env.MAX_REDIRECTS)) : 3)) }}",
+              "type": "number"
+            },
+            {
+              "id": "0fe47818-97c0-5319-8759-8676e3a1a2c8",
+              "name": "config.allowPrivateTargets",
+              "value": "={{ String($env.ALLOW_PRIVATE_TARGETS ?? 'false').trim().toLowerCase() === 'true' }}",
+              "type": "boolean"
+            },
+            {
+              "id": "a4eddf13-4e10-5307-863a-0abe8958bfc6",
+              "name": "config.userAgent",
+              "value": "={{ String($env.INSPECTION_USER_AGENT ?? 'dhRobin-TLS-Watchdog/1.0 (security monitoring)').trim() || 'dhRobin-TLS-Watchdog/1.0 (security monitoring)' }}",
+              "type": "string"
+            },
+            {
+              "id": "d95c45ba-4bb6-50d1-b8f4-e9df85418155",
+              "name": "config.recordRepeatDays",
+              "value": "={{ Math.min(90, Math.max(1, Number.isFinite(parseFloat($env.RECORD_REPEAT_DAYS)) ? Math.round(parseFloat($env.RECORD_REPEAT_DAYS)) : 7)) }}",
+              "type": "number"
+            },
+            {
+              "id": "cd2ddbeb-a8b4-5a09-9aa5-7050b5216f24",
+              "name": "config.hubspotTaskOwnerId",
+              "value": "={{ String($env.HUBSPOT_TASK_OWNER_ID ?? '').trim() }}",
+              "type": "string"
+            },
+            {
+              "id": "13523bbb-125d-5633-9b77-0406ed8857b1",
+              "name": "config.hubspotBaseUrl",
+              "value": "={{ String($env.HUBSPOT_API_BASE_URL ?? 'https://api.hubapi.com').trim().replace(/\\/+$/, '') || 'https://api.hubapi.com' }}",
+              "type": "string"
+            },
+            {
+              "id": "bd64ce0c-8e04-57ce-a3ab-35e83e9f137c",
+              "name": "config.notionDatabaseId",
+              "value": "={{ String($env.NOTION_DATABASE_ID ?? '').trim() }}",
+              "type": "string"
+            },
+            {
+              "id": "38af0f5e-0b50-55ed-ac98-9be319833424",
+              "name": "config.notionTitleProperty",
+              "value": "={{ String($env.NOTION_TITLE_PROPERTY ?? 'Name').trim() || 'Name' }}",
+              "type": "string"
+            },
+            {
+              "id": "fe8f5e8c-9217-5328-ad53-ab0bf41b7f96",
+              "name": "config.runId",
+              "value": "={{ $execution.id }}",
+              "type": "string"
+            },
+            {
+              "id": "c1591a6a-05a1-5d70-87b0-48b00016e7ab",
+              "name": "config.executionMode",
+              "value": "={{ $execution.mode }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "85e97c0e-0997-5000-9ab3-4a88206d773b",
+      "name": "Config & Safety Gate",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -280,
+        200
+      ],
+      "notes": "Typed, non-secret configuration under config.*. Channel flags only record whether a secret is set, never its value.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "283375bc-d47a-5fba-928d-d0d6c2376bfa",
+              "leftValue": "={{ !$('Config & Safety Gate').first().json.config.sandboxMode && $('Config & Safety Gate').first().json.config.domainSource === 'url' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "5c5e04cc-35b8-5e0e-95f0-ba91bbc52e21",
+      "name": "Domain Source: URL?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -60,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.DOMAINS_LIST_URL }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.DOMAINS_LIST_TOKEN }}"
+            },
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "e6387c16-7e04-5be6-8d56-4a786ffd3ad3",
+      "name": "HTTP: Fetch Domain List",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        160,
+        100
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "notes": "JSON array or { domains: [...] } (README §8.2).",
+      "notesInFlow": false,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─────────────────────────────────────────────────────────────────────────────\n// Load & Normalize Domain List\n// Sources: the embedded fixture (SANDBOX_MODE=true, identical to\n// sample-payloads/domains-list.json), SENDER_DOMAINS (comma list or JSON), or\n// the JSON fetched by \"HTTP: Fetch Domain List\" (DOMAIN_SOURCE=url).\n// Validates hostnames, lower-cases, de-duplicates, drops disabled entries and\n// applies per-domain defaults.\n// ─────────────────────────────────────────────────────────────────────────────\nconst cfg = $('Config & Safety Gate').first().json.config;\nconst FIXTURE = {\n  \"_comment\": \"Synthetic fixture. All domains use reserved example TLDs. Shape documented in README \\u00a78.2.\",\n  \"domains\": [\n    {\n      \"domain\": \"sender.example.com\",\n      \"role\": \"sending_domain_web\",\n      \"owner\": \"team-deliverability\",\n      \"port\": 443,\n      \"path\": \"/\",\n      \"checkHeaders\": true\n    },\n    {\n      \"domain\": \"mail.example.com\",\n      \"role\": \"webmail\",\n      \"owner\": \"team-it\",\n      \"port\": 443,\n      \"path\": \"/\",\n      \"checkHeaders\": true\n    },\n    {\n      \"domain\": \"track.example.com\",\n      \"role\": \"click_tracking\",\n      \"owner\": \"team-marketing-ops\",\n      \"port\": 443,\n      \"path\": \"/\",\n      \"checkHeaders\": true\n    },\n    {\n      \"domain\": \"links.example.net\",\n      \"role\": \"link_branding\",\n      \"owner\": \"team-marketing-ops\",\n      \"port\": 443,\n      \"path\": \"/\",\n      \"checkHeaders\": true\n    },\n    {\n      \"domain\": \"go.example.org\",\n      \"role\": \"landing_pages\",\n      \"owner\": \"team-web\",\n      \"port\": 443,\n      \"path\": \"/\",\n      \"checkHeaders\": true\n    },\n    {\n      \"domain\": \"bounce.example.com\",\n      \"role\": \"smtp_implicit_tls\",\n      \"owner\": \"team-deliverability\",\n      \"port\": 465,\n      \"checkHeaders\": false,\n      \"checkRedirect\": false\n    },\n    {\n      \"domain\": \"legacy.example.com\",\n      \"role\": \"legacy_preference_center\",\n      \"owner\": \"team-web\",\n      \"port\": 443,\n      \"path\": \"/preferences\",\n      \"checkHeaders\": true\n    },\n    {\n      \"domain\": \"promo.example.com\",\n      \"role\": \"campaign_microsite\",\n      \"owner\": \"team-marketing-ops\",\n      \"port\": 443,\n      \"path\": \"/\",\n      \"checkHeaders\": true\n    },\n    {\n      \"domain\": \"archive.example.com\",\n      \"role\": \"retired_microsite\",\n      \"owner\": \"team-web\",\n      \"enabled\": false\n    },\n    {\n      \"domain\": \"not a domain!\",\n      \"role\": \"invalid_entry_for_testing\"\n    },\n    {\n      \"domain\": \"SENDER.example.com\",\n      \"role\": \"duplicate_entry_for_testing\"\n    }\n  ]\n};\n\nlet raw = [];\nlet source = 'fixture';\nif (cfg.sandboxMode) {\n  raw = FIXTURE.domains;\n} else if (cfg.domainSource === 'url') {\n  source = 'url';\n  let fetched = null;\n  try { fetched = $('HTTP: Fetch Domain List').first().json; } catch (e) { fetched = null; }\n  if (!fetched || fetched.error) throw new Error('DOMAIN_SOURCE=url but the domain list could not be fetched. Check DOMAINS_LIST_URL.');\n  raw = Array.isArray(fetched) ? fetched : (fetched.domains || fetched.data || []);\n} else {\n  source = 'env';\n  const txt = String(cfg.senderDomainsRaw || '').trim();\n  if (txt.startsWith('[') || txt.startsWith('{')) {\n    try { const j = JSON.parse(txt); raw = Array.isArray(j) ? j : (j.domains || []); }\n    catch (e) { throw new Error('SENDER_DOMAINS looks like JSON but does not parse.'); }\n  } else {\n    raw = txt.split(/[\\s,;]+/).filter(Boolean);\n  }\n}\n\nconst HOST = /^(?=.{1,253}$)(?!-)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,63}$/;\nconst seen = new Set();\nconst domains = [];\nconst rejected = [];\nfor (const entry of raw) {\n  const e = typeof entry === 'string' ? { domain: entry } : (entry || {});\n  const domain = String(e.domain || e.host || '').trim().toLowerCase().replace(/^https?:\\/\\//, '').replace(/[/:].*$/, '').replace(/\\.$/, '');\n  if (e.enabled === false) { rejected.push({ domain: domain || null, reason: 'disabled' }); continue; }\n  if (!HOST.test(domain) && !(cfg.allowPrivateTargets && domain === 'localhost')) { rejected.push({ domain: String(e.domain || '').slice(0, 80), reason: 'invalid_hostname' }); continue; }\n  const port = Number.isInteger(Number(e.port)) && Number(e.port) > 0 && Number(e.port) < 65536 ? Number(e.port) : 443;\n  const key = `${domain}:${port}`;\n  if (seen.has(key)) { rejected.push({ domain, reason: 'duplicate' }); continue; }\n  seen.add(key);\n  if (domains.length >= cfg.maxDomains) { rejected.push({ domain, reason: 'over_max_domains' }); continue; }\n  const checkHeaders = e.checkHeaders === undefined ? port === 443 : Boolean(e.checkHeaders);\n  domains.push({\n    domain, port,\n    path: typeof e.path === 'string' && e.path.startsWith('/') ? e.path.slice(0, 200) : '/',\n    role: String(e.role || 'unspecified').slice(0, 60),\n    owner: String(e.owner || '').slice(0, 80) || null,\n    checkHeaders,\n    checkRedirect: e.checkRedirect === undefined ? (checkHeaders && cfg.checkHttpRedirect) : Boolean(e.checkRedirect) && cfg.checkHttpRedirect,\n    requiredHeaders: Array.isArray(e.requiredHeaders) ? e.requiredHeaders.map((h) => String(h).toLowerCase()) : null,\n    warningDays: Number.isFinite(Number(e.warningDays)) ? Number(e.warningDays) : null,\n  });\n}\nreturn [{ json: { source, domains, rejected, count: domains.length } }];\n"
+      },
+      "id": "a59c3882-3299-5a6c-81ce-b7ded6c3c69f",
+      "name": "Load & Normalize Domain List",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        380,
+        200
+      ],
+      "notes": "Fixture, SENDER_DOMAINS or fetched list → validated, de-duplicated entries.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "1bcf1c74-f950-5060-a56b-97d58fb42b1c",
+              "leftValue": "={{ $json.count }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "7210fd91-a6d0-503e-bfb3-86a8c5493cc3",
+      "name": "Has Domains?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        600,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "93955f48-f6b5-59d7-b8ba-f6c376f31dee",
+              "leftValue": "={{ $('Config & Safety Gate').first().json.config.sandboxMode }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "209cb672-0823-52c2-b5dd-3e95a69ca822",
+      "name": "Sandbox Mode?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        820,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─────────────────────────────────────────────────────────────────────────────\n// Mock Inspection Results (SANDBOX_MODE=true)\n// Synthetic observations in exactly the shape the live inspector produces,\n// dated relative to \"now\" so every scenario stays stable over time.\n// No DNS, TLS or HTTP traffic is generated.\n// ─────────────────────────────────────────────────────────────────────────────\nconst { domains } = $('Load & Normalize Domain List').first().json;\nconst DAY = 86400000;\nconst at = (days) => new Date(Date.now() + days * DAY).toISOString();\nconst GOOD_HEADERS = {\n  'strict-transport-security': 'max-age=31536000; includeSubDomains; preload',\n  'content-security-policy': \"default-src 'self'; frame-ancestors 'none'\",\n  'x-frame-options': 'DENY',\n  'x-content-type-options': 'nosniff',\n  'referrer-policy': 'strict-origin-when-cross-origin',\n};\nconst tlsOk = (host, days, extra = {}) => ({\n  authorized: true, authorizationError: null, identityError: null, protocol: 'TLSv1.3', cipher: 'TLS_AES_256_GCM_SHA384',\n  cert: { subjectCN: host, subjectAltNames: [host], issuer: 'Synthetic Issuing CA R1', validFrom: at(Math.min(-10, days - 90)), validTo: at(days + 0.5), serialNumber: '0A1B2C3D4E5F', fingerprint256: 'AA:BB:CC:DD:00:11:22:33', bits: 256, keyType: 'EC', selfSigned: false },\n  chain: [{ subject: 'Synthetic Issuing CA R1', issuer: 'Synthetic Root CA X1', validTo: at(900) }, { subject: 'Synthetic Root CA X1', issuer: 'Synthetic Root CA X1', validTo: at(3000) }],\n  ...extra,\n});\nconst page = (host, headers, path = '/') => ({ status: 200, headers, hops: [{ url: `https://${host}${path}`, status: 200, location: null }], firstHsts: headers['strict-transport-security'] || null, finalUrl: `https://${host}${path}` });\nconst redirectOk = (host) => ({ status: 301, location: `https://${host}/`, redirectsToHttps: true });\n\nconst SCENARIOS = {\n  'sender.example.com': (d) => ({ resolvedIp: '192.0.2.10', tls: tlsOk(d.domain, 74), https: page(d.domain, GOOD_HEADERS), http: redirectOk(d.domain) }),\n  'mail.example.com': (d) => {\n    const h = { ...GOOD_HEADERS }; delete h['content-security-policy'];\n    return { resolvedIp: '192.0.2.11', tls: tlsOk(d.domain, 21), https: page(d.domain, h), http: redirectOk(d.domain) };\n  },\n  'track.example.com': (d) => ({\n    resolvedIp: '192.0.2.12', tls: tlsOk(d.domain, 5),\n    https: { status: 404, headers: { 'x-content-type-options': 'nosniff' }, hops: [{ url: `https://${d.domain}/`, status: 302, location: `https://${d.domain}/c/landing` }, { url: `https://${d.domain}/c/landing`, status: 404, location: null }], firstHsts: null, finalUrl: `https://${d.domain}/c/landing` },\n    http: { status: 200, location: null, redirectsToHttps: false },\n  }),\n  'links.example.net': (d) => ({ resolvedIp: '198.51.100.20', tls: tlsOk(d.domain, -3, { authorized: false, authorizationError: 'CERT_HAS_EXPIRED' }), https: page(d.domain, GOOD_HEADERS), http: redirectOk(d.domain) }),\n  'go.example.org': (d) => {\n    const t = tlsOk('*.cdn.example.net', 200, { authorized: true, identityError: \"Host: go.example.org. is not in the cert's altnames: DNS:*.cdn.example.net\" });\n    t.cert.subjectAltNames = ['*.cdn.example.net', 'cdn.example.net'];\n    return { resolvedIp: '198.51.100.21', tls: t, https: page(d.domain, { ...GOOD_HEADERS, 'strict-transport-security': 'max-age=86400' }), http: redirectOk(d.domain) };\n  },\n  'bounce.example.com': (d) => ({ resolvedIp: '192.0.2.15', tls: tlsOk(d.domain, 120, { protocol: 'TLSv1.2', cipher: 'ECDHE-RSA-AES256-GCM-SHA384' }), https: null, http: null }),\n  'legacy.example.com': (d) => {\n    const t = tlsOk(d.domain, 400, { authorized: false, authorizationError: 'DEPTH_ZERO_SELF_SIGNED_CERT', protocol: 'TLSv1.1', cipher: 'AES128-SHA' });\n    t.cert.issuer = d.domain; t.cert.selfSigned = true; t.cert.bits = 1024; t.cert.keyType = 'RSA'; t.chain = [];\n    return { resolvedIp: '192.0.2.16', tls: t, https: page(d.domain, { server: 'synthetic-httpd/2.2' }, d.path), http: { status: 200, location: null, redirectsToHttps: false } };\n  },\n  'promo.example.com': () => ({ error: { stage: 'dns', code: 'ENOTFOUND', message: 'DNS lookup failed (ENOTFOUND).' } }),\n};\n\nconst observations = domains.map((d) => {\n  const base = { domain: d.domain, port: d.port, path: d.path, role: d.role, owner: d.owner, checkHeaders: d.checkHeaders, checkRedirect: d.checkRedirect, requiredHeaders: d.requiredHeaders, warningDays: d.warningDays, inspectedAt: new Date().toISOString(), resolvedIp: null, error: null, tls: null, https: null, http: null };\n  const s = SCENARIOS[d.domain] ? SCENARIOS[d.domain](d) : { resolvedIp: '192.0.2.99', tls: tlsOk(d.domain, 60), https: d.checkHeaders ? page(d.domain, GOOD_HEADERS) : null, http: d.checkRedirect ? redirectOk(d.domain) : null };\n  const o = { ...base, ...s };\n  if (!d.checkHeaders) o.https = null;\n  if (!d.checkRedirect) o.http = null;\n  return o;\n});\nreturn [{ json: { mode: 'mock', durationMs: 0, observations } }];\n"
+      },
+      "id": "b69968d9-2684-5758-ba8d-c0fe166cffae",
+      "name": "Mock Inspection Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        20
+      ],
+      "notes": "Synthetic observations, no network.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─────────────────────────────────────────────────────────────────────────────\n// Security Inspection (TLS + Headers)  ·  live path only (SANDBOX_MODE=false)\n// Uses Node.js built-ins only: dns, tls, https, http.\n// Per domain:\n//   1. DNS lookup + SSRF guard (private/loopback/link-local targets refused\n//      unless ALLOW_PRIVATE_TARGETS=true).\n//   2. TLS handshake with SNI → certificate, chain, trust result, hostname\n//      check, protocol, cipher, key size.\n//   3. HTTPS GET (optional) → status, security headers, redirect chain.\n//   4. HTTP GET on port 80 (optional) → is there a redirect to HTTPS?\n// Connections go to the resolved, vetted IP with SNI/Host set to the domain,\n// so DNS can't be re-pointed between the check and the connection.\n// Records raw observations only; \"Evaluate Findings\" decides severity.\n// Requires NODE_FUNCTION_ALLOW_BUILTIN to include dns,tls,https,http.\n// ─────────────────────────────────────────────────────────────────────────────\nconst cfg = $('Config & Safety Gate').first().json.config;\nconst { domains } = $('Load & Normalize Domain List').first().json;\n\nlet dns, tls, https, http, net;\ntry {\n  dns = require('dns'); tls = require('tls'); https = require('https'); http = require('http'); net = require('net');\n} catch (e) {\n  throw new Error('Security inspection needs NODE_FUNCTION_ALLOW_BUILTIN=dns,tls,https,http,net (see README §4).');\n}\n\nconst HEADERS = ['strict-transport-security', 'content-security-policy', 'x-frame-options', 'x-content-type-options', 'referrer-policy', 'permissions-policy', 'server'];\n\nfunction isPrivate(ip) {\n  if (net.isIPv4(ip)) {\n    const [a, b] = ip.split('.').map(Number);\n    return a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127) || a >= 224;\n  }\n  const v = ip.toLowerCase();\n  if (v.startsWith('::ffff:')) return isPrivate(v.slice(7));\n  return v === '::1' || v === '::' || v.startsWith('fc') || v.startsWith('fd') || v.startsWith('fe80') || v.startsWith('ff');\n}\n\nfunction resolve(host) {\n  return new Promise((ok) => {\n    dns.lookup(host, { all: false }, (err, address) => ok(err ? { error: err.code || 'DNS_ERROR' } : { ip: address }));\n  });\n}\n\nfunction vetTarget(host, ip) {\n  if (!cfg.allowPrivateTargets && isPrivate(ip)) return { stage: 'policy', code: 'PRIVATE_TARGET_BLOCKED', message: `${host} resolves to a private or reserved address; set ALLOW_PRIVATE_TARGETS=true to inspect internal hosts.` };\n  return null;\n}\n\nconst iso = (d) => { const t = Date.parse(d); return Number.isFinite(t) ? new Date(t).toISOString() : null; };\nconst cn = (o) => (o && (o.CN || o.O)) || null;\n\nfunction tlsProbe(host, ip, port) {\n  return new Promise((ok) => {\n    let done = false;\n    const finish = (v, s) => { if (done) return; done = true; try { s && s.destroy(); } catch (e) { /* ignore */ } ok(v); };\n    const socket = tls.connect({ host: ip, port, servername: net.isIP(host) ? undefined : host, rejectUnauthorized: false, timeout: cfg.timeoutMs, ALPNProtocols: ['http/1.1'] }, () => {\n      const cert = socket.getPeerCertificate(true) || {};\n      if (!cert || !cert.valid_to) return finish({ error: { stage: 'tls', code: 'NO_CERTIFICATE', message: 'Server presented no certificate.' } }, socket);\n      const idErr = tls.checkServerIdentity(host, cert);\n      const chain = [];\n      let c = cert.issuerCertificate;\n      const seenFp = new Set([cert.fingerprint256]);\n      while (c && c.fingerprint256 && !seenFp.has(c.fingerprint256) && chain.length < 6) {\n        seenFp.add(c.fingerprint256);\n        chain.push({ subject: cn(c.subject), issuer: cn(c.issuer), validTo: iso(c.valid_to) });\n        c = c.issuerCertificate;\n      }\n      const cipher = socket.getCipher() || {};\n      finish({\n        tls: {\n          authorized: socket.authorized === true,\n          authorizationError: socket.authorizationError ? String(socket.authorizationError) : null,\n          identityError: idErr ? String(idErr.reason || idErr.message) : null,\n          protocol: socket.getProtocol(),\n          cipher: cipher.name || null,\n          cert: {\n            subjectCN: cn(cert.subject),\n            subjectAltNames: String(cert.subjectaltname || '').split(',').map((s) => s.trim().replace(/^DNS:/, '')).filter(Boolean).slice(0, 50),\n            issuer: cn(cert.issuer),\n            validFrom: iso(cert.valid_from),\n            validTo: iso(cert.valid_to),\n            serialNumber: cert.serialNumber || null,\n            fingerprint256: cert.fingerprint256 || null,\n            bits: cert.bits || null,\n            keyType: cert.asn1Curve || cert.nistCurve ? 'EC' : (cert.bits ? 'RSA' : null),\n            selfSigned: Boolean(cert.fingerprint256 && cert.issuerCertificate && cert.issuerCertificate.fingerprint256 === cert.fingerprint256),\n          },\n          chain,\n        },\n      }, socket);\n    });\n    socket.on('timeout', () => finish({ error: { stage: 'tls', code: 'TIMEOUT', message: `TLS handshake exceeded ${cfg.timeoutMs} ms.` } }, socket));\n    socket.on('error', (e) => finish({ error: { stage: 'tls', code: e.code || 'TLS_ERROR', message: String(e.message).slice(0, 200) } }, socket));\n  });\n}\n\nfunction request(mod, opts) {\n  return new Promise((ok) => {\n    let done = false;\n    const finish = (v) => { if (!done) { done = true; ok(v); } };\n    const req = mod.request(opts, (res) => {\n      const headers = {};\n      for (const h of HEADERS) if (res.headers[h] !== undefined) headers[h] = String(res.headers[h]).slice(0, 1000);\n      finish({ status: res.statusCode, headers, location: res.headers.location ? String(res.headers.location).slice(0, 500) : null });\n      res.destroy();\n    });\n    req.on('timeout', () => { req.destroy(); finish({ error: 'TIMEOUT' }); });\n    req.on('error', (e) => finish({ error: e.code || 'REQUEST_ERROR' }));\n    req.end();\n  });\n}\n\nasync function httpsProbe(host, ip, port, path) {\n  const hops = [];\n  let curHost = host; let curIp = ip; let curPort = port; let curPath = path;\n  let firstHsts = null;\n  for (let i = 0; i <= cfg.maxRedirects; i += 1) {\n    const r = await request(https, { host: curIp, port: curPort, path: curPath, method: 'GET', servername: net.isIP(curHost) ? undefined : curHost, rejectUnauthorized: false, timeout: cfg.timeoutMs, headers: { Host: curPort === 443 ? curHost : `${curHost}:${curPort}`, 'User-Agent': cfg.userAgent, Accept: 'text/html,*/*' } });\n    if (r.error) return { error: r.error, hops };\n    hops.push({ url: `https://${curHost}${curPort === 443 ? '' : `:${curPort}`}${curPath}`, status: r.status, location: r.location });\n    if (firstHsts === null && r.headers['strict-transport-security']) firstHsts = r.headers['strict-transport-security'];\n    if (r.status >= 300 && r.status < 400 && r.location) {\n      let next;\n      try { next = new URL(r.location, `https://${curHost}${curPath}`); } catch (e) { return { status: r.status, headers: r.headers, hops, firstHsts, redirectError: 'INVALID_LOCATION' }; }\n      if (next.protocol !== 'https:') return { status: r.status, headers: r.headers, hops, firstHsts, redirectError: 'REDIRECT_TO_HTTP' };\n      if (i === cfg.maxRedirects) return { status: r.status, headers: r.headers, hops, firstHsts, redirectError: 'TOO_MANY_REDIRECTS' };\n      const res = await resolve(next.hostname);\n      if (res.error) return { status: r.status, headers: r.headers, hops, firstHsts, redirectError: `REDIRECT_DNS_${res.error}` };\n      if (vetTarget(next.hostname, res.ip)) return { status: r.status, headers: r.headers, hops, firstHsts, redirectError: 'REDIRECT_TO_PRIVATE_TARGET' };\n      curHost = next.hostname; curIp = res.ip; curPort = Number(next.port) || 443; curPath = `${next.pathname}${next.search}`;\n      continue;\n    }\n    return { status: r.status, headers: r.headers, hops, firstHsts, finalUrl: hops[hops.length - 1].url };\n  }\n  return { error: 'TOO_MANY_REDIRECTS', hops };\n}\n\nasync function inspect(d) {\n  const obs = { domain: d.domain, port: d.port, path: d.path, role: d.role, owner: d.owner, checkHeaders: d.checkHeaders, checkRedirect: d.checkRedirect, requiredHeaders: d.requiredHeaders, warningDays: d.warningDays, inspectedAt: new Date().toISOString(), resolvedIp: null, error: null, tls: null, https: null, http: null };\n  const r = await resolve(d.domain);\n  if (r.error) { obs.error = { stage: 'dns', code: r.error, message: `DNS lookup failed (${r.error}).` }; return obs; }\n  obs.resolvedIp = r.ip;\n  const blocked = vetTarget(d.domain, r.ip);\n  if (blocked) { obs.error = blocked; return obs; }\n  const t = await tlsProbe(d.domain, r.ip, d.port);\n  if (t.error) { obs.error = t.error; return obs; }\n  obs.tls = t.tls;\n  if (d.checkHeaders) obs.https = await httpsProbe(d.domain, r.ip, d.port, d.path);\n  if (d.checkRedirect) {\n    const h = await request(http, { host: r.ip, port: 80, path: '/', method: 'GET', timeout: cfg.timeoutMs, headers: { Host: d.domain, 'User-Agent': cfg.userAgent } });\n    obs.http = h.error ? { error: h.error } : { status: h.status, location: h.location, redirectsToHttps: h.status >= 300 && h.status < 400 && /^https:\\/\\//i.test(String(h.location || '')) };\n  }\n  return obs;\n}\n\n// Bounded concurrency\nconst observations = new Array(domains.length);\nlet next = 0;\nconst worker = async () => { while (next < domains.length) { const i = next; next += 1; observations[i] = await inspect(domains[i]); } };\nconst started = Date.now();\nawait Promise.all(Array.from({ length: Math.min(cfg.concurrency, domains.length) }, worker));\nreturn [{ json: { mode: 'live', durationMs: Date.now() - started, observations } }];\n"
+      },
+      "id": "861df3e8-3618-53f8-9a5c-a502364a4eb2",
+      "name": "Security Inspection (TLS + Headers)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        220
+      ],
+      "notes": "Node.js dns/tls/https/http. Bounded concurrency.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─────────────────────────────────────────────────────────────────────────────\n// Evaluate Findings\n// Turns raw observations into findings with a severity:\n//   critical: unreachable, expired, not yet valid, untrusted chain, hostname\n//             mismatch, ≤ CRITICAL_DAYS to expiry\n//   warning:  ≤ DAYS_WARNING_THRESHOLD to expiry, intermediate expiring,\n//             TLS < 1.2, weak key, missing/weak security headers (severity\n//             set by HEADER_SEVERITY), no HTTP→HTTPS redirect\n//   info:     optional headers absent, Server header discloses a version\n// A domain's status is its worst finding (ok when none).\n// ─────────────────────────────────────────────────────────────────────────────\nconst cfg = $('Config & Safety Gate').first().json.config;\nconst { observations, mode, durationMs } = $input.first().json;\nconst DAY = 86400000;\nconst RANK = { ok: 0, info: 1, warning: 2, critical: 3 };\nconst now = Date.now();\nconst days = (iso) => (iso ? Math.floor((Date.parse(iso) - now) / DAY) : null);\n\nconst results = observations.map((o) => {\n  const f = [];\n  const add = (severity, code, message) => f.push({ severity, code, message });\n  const warnDays = o.warningDays ?? cfg.daysWarningThreshold;\n  let daysRemaining = null;\n\n  if (o.error) {\n    const sev = o.error.code === 'PRIVATE_TARGET_BLOCKED' ? 'warning' : 'critical';\n    add(sev, `${o.error.stage}_${String(o.error.code).toLowerCase()}`, o.error.message || o.error.code);\n  }\n  const t = o.tls;\n  if (t) {\n    daysRemaining = days(t.cert.validTo);\n    const notBefore = t.cert.validFrom ? Date.parse(t.cert.validFrom) : null;\n    if (daysRemaining !== null && Date.parse(t.cert.validTo) <= now) add('critical', 'cert_expired', `Certificate expired ${Math.abs(daysRemaining)} day(s) ago (${t.cert.validTo.slice(0, 10)}).`);\n    else if (notBefore && notBefore > now) add('critical', 'cert_not_yet_valid', `Certificate is not valid before ${t.cert.validFrom.slice(0, 10)}.`);\n    else if (daysRemaining !== null && daysRemaining <= cfg.criticalDays) add('critical', 'cert_expiring_critical', `Certificate expires in ${daysRemaining} day(s) (${t.cert.validTo.slice(0, 10)}).`);\n    else if (daysRemaining !== null && daysRemaining <= warnDays) add('warning', 'cert_expiring_soon', `Certificate expires in ${daysRemaining} day(s) (${t.cert.validTo.slice(0, 10)}).`);\n\n    if (t.identityError) add('critical', 'hostname_mismatch', `Certificate does not cover ${o.domain} (SANs: ${t.cert.subjectAltNames.slice(0, 5).join(', ') || 'none'}).`);\n    if (!t.authorized && t.authorizationError && t.authorizationError !== 'CERT_HAS_EXPIRED') {\n      add('critical', 'chain_untrusted', `Certificate chain is not trusted (${t.authorizationError}${t.cert.selfSigned ? ', self-signed' : ''}).`);\n    }\n    for (const c of t.chain || []) {\n      const d = days(c.validTo);\n      if (c.subject !== c.issuer && d !== null && d <= warnDays) add('warning', 'intermediate_expiring', `Intermediate \"${c.subject}\" expires in ${d} day(s).`);\n    }\n    if (t.protocol && !['TLSv1.2', 'TLSv1.3'].includes(t.protocol)) add('warning', 'weak_tls_protocol', `Negotiated ${t.protocol}; require TLS 1.2 or later.`);\n    if (t.cert.keyType === 'RSA' && t.cert.bits && t.cert.bits < 2048) add('warning', 'weak_key', `RSA key is ${t.cert.bits} bits; use 2048 or more.`);\n  }\n\n  const h = o.https;\n  if (o.checkHeaders && h) {\n    if (h.error) add(cfg.headerSeverity === 'info' ? 'warning' : cfg.headerSeverity, 'https_request_failed', `HTTPS request failed (${h.error}).`);\n    else {\n      if (h.redirectError) add('warning', `redirect_${h.redirectError.toLowerCase()}`, `HTTPS redirect chain problem: ${h.redirectError}.`);\n      const hd = h.headers || {};\n      const required = o.requiredHeaders || cfg.requiredHeaders;\n      const hsts = h.firstHsts || hd['strict-transport-security'] || null;\n      for (const name of required) {\n        if (name === 'strict-transport-security') {\n          if (!hsts) add(cfg.headerSeverity, 'header_missing_hsts', 'Strict-Transport-Security header is missing.');\n          else {\n            const m = /max-age\\s*=\\s*\"?(\\d+)/i.exec(hsts);\n            const age = m ? Number(m[1]) : 0;\n            if (age < cfg.hstsMinMaxAge) add(cfg.headerSeverity, 'header_weak_hsts', `HSTS max-age is ${age}s; minimum is ${cfg.hstsMinMaxAge}s.`);\n          }\n        } else if (name === 'x-frame-options') {\n          const csp = String(hd['content-security-policy'] || '');\n          if (!hd['x-frame-options'] && !/frame-ancestors/i.test(csp)) add(cfg.headerSeverity, 'header_missing_x_frame_options', 'Neither X-Frame-Options nor CSP frame-ancestors is set.');\n        } else if (name === 'x-content-type-options') {\n          if (String(hd['x-content-type-options'] || '').toLowerCase() !== 'nosniff') add(cfg.headerSeverity, 'header_missing_x_content_type_options', 'X-Content-Type-Options: nosniff is missing.');\n        } else if (!hd[name]) {\n          add(cfg.headerSeverity, `header_missing_${name.replace(/-/g, '_')}`, `${name} header is missing.`);\n        }\n      }\n      if (!required.includes('referrer-policy') && !hd['referrer-policy']) add('info', 'header_absent_referrer_policy', 'Referrer-Policy is not set (optional).');\n      if (/\\d/.test(String(hd.server || ''))) add('info', 'server_version_disclosed', `Server header discloses a version (${String(hd.server).slice(0, 60)}).`);\n    }\n  }\n  if (o.checkRedirect && o.http) {\n    if (o.http.error) add('info', 'http_port_unreachable', `Port 80 not reachable (${o.http.error}).`);\n    else if (!o.http.redirectsToHttps) add('warning', 'no_https_redirect', `http://${o.domain}/ returns ${o.http.status} without redirecting to HTTPS.`);\n  }\n\n  const status = f.reduce((s, x) => (RANK[x.severity] > RANK[s] ? x.severity : s), 'ok');\n  return {\n    domain: o.domain, port: o.port, role: o.role, owner: o.owner, status,\n    alert: RANK[status] >= RANK[cfg.alertMinSeverity],\n    daysRemaining,\n    validTo: t?.cert?.validTo || null, issuer: t?.cert?.issuer || null, protocol: t?.protocol || null,\n    findings: f.sort((a, b) => RANK[b.severity] - RANK[a.severity]),\n    fingerprint: `${o.domain}:${o.port}|${status}|${f.filter((x) => x.severity !== 'info').map((x) => x.code).sort().join(',')}`,\n  };\n});\n\nconst counts = { domains: results.length, ok: 0, info: 0, warning: 0, critical: 0, alerting: 0 };\nfor (const r of results) { counts[r.status] += 1; if (r.alert) counts.alerting += 1; }\nresults.sort((a, b) => RANK[b.status] - RANK[a.status] || (a.daysRemaining ?? -1e9) - (b.daysRemaining ?? -1e9));\nreturn [{ json: { mode, durationMs, counts, results } }];\n"
+      },
+      "id": "7452aaca-b86a-51de-99de-1d9e00d00e3e",
+      "name": "Evaluate Findings",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1260,
+        120
+      ],
+      "notes": "Severity per finding; domain status = worst finding.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─────────────────────────────────────────────────────────────────────────────\n// Compose Alerts\n// Builds every channel payload from the evaluated results:\n//   slack   → one Block Kit summary per run (incoming webhook)\n//   webhook → one JSON document per run\n//   hubspot → one task per alerting domain (batch create)\n//   notion  → one page per alerting domain\n// HubSpot tasks and Notion pages are records, so they are created only when a\n// domain's finding fingerprint changed or RECORD_REPEAT_DAYS have passed\n// (tracked in workflow static data, production executions only). Chat and\n// webhook alerts repeat every run while a problem persists.\n// ─────────────────────────────────────────────────────────────────────────────\nconst cfg = $('Config & Safety Gate').first().json.config;\nconst ev = $input.first().json;\nconst alerts = ev.results.filter((r) => r.alert);\nconst ICON = { critical: '🔴', warning: '🟠', info: '🔵', ok: '🟢' };\nconst day = new Date().toISOString().slice(0, 10);\nconst esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst top = (r, n = 3) => r.findings.filter((f) => f.severity !== 'info').slice(0, n);\nconst expiry = (r) => (r.daysRemaining === null ? 'cert n/a' : r.daysRemaining < 0 ? `expired ${-r.daysRemaining}d ago` : `${r.daysRemaining}d left`);\n\n// ── record-repeat state ──\nlet store = null;\ntry { store = $getWorkflowStaticData('global'); } catch (e) { store = null; }\nconst persist = Boolean(store) && !cfg.sandboxMode && !cfg.dryRun && cfg.executionMode === 'production';\nconst memory = persist ? (store.recorded = store.recorded || {}) : {};\nconst recordable = alerts.filter((r) => {\n  const prev = memory[`${r.domain}:${r.port}`];\n  return !prev || prev.fingerprint !== r.fingerprint || Date.now() - prev.at > cfg.recordRepeatDays * 86400000;\n});\nif (persist) {\n  for (const r of recordable) memory[`${r.domain}:${r.port}`] = { fingerprint: r.fingerprint, at: Date.now() };\n  for (const r of ev.results.filter((x) => !x.alert)) delete memory[`${r.domain}:${r.port}`];\n}\n\n// ── Slack ──\nconst head = alerts.length\n  ? `${ICON.critical} ${ev.counts.critical} critical · ${ICON.warning} ${ev.counts.warning} warning · ${ev.counts.domains} domains checked`\n  : `${ICON.ok} All ${ev.counts.domains} sender domains passed (threshold ${cfg.daysWarningThreshold} days)`;\nconst blocks = [\n  { type: 'header', text: { type: 'plain_text', text: `Sender domain TLS watchdog · ${day}`, emoji: true } },\n  { type: 'section', text: { type: 'mrkdwn', text: head } },\n];\nfor (const r of alerts.slice(0, 20)) {\n  const lines = top(r).map((f) => `• ${esc(f.message)}`).join('\\n');\n  blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `${ICON[r.status]} *${esc(r.domain)}${r.port === 443 ? '' : `:${r.port}`}* · ${esc(r.role)} · ${expiry(r)}${r.owner ? ` · owner \\`${esc(r.owner)}\\`` : ''}\\n${lines}`.slice(0, 2900) } });\n}\nif (alerts.length > 20) blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: `…and ${alerts.length - 20} more. See the n8n execution.` }] });\nblocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: `n8n run ${cfg.runId} · ${ev.mode === 'mock' ? 'SANDBOX (synthetic data)' : 'live inspection'}` }] });\nconst slackBody = { text: head, blocks };\n\n// ── Webhook ──\nconst webhookBody = {\n  event: alerts.length ? 'sender_domain_security.alert' : 'sender_domain_security.all_clear',\n  generatedAt: new Date().toISOString(), runId: cfg.runId, mode: ev.mode,\n  thresholds: { warningDays: cfg.daysWarningThreshold, criticalDays: cfg.criticalDays, alertMinSeverity: cfg.alertMinSeverity },\n  counts: ev.counts,\n  alerts: alerts.map((r) => ({ domain: r.domain, port: r.port, role: r.role, owner: r.owner, status: r.status, daysRemaining: r.daysRemaining, validTo: r.validTo, issuer: r.issuer, protocol: r.protocol, findings: r.findings })),\n};\n\n// ── HubSpot tasks ──\nconst due = (r) => {\n  const ms = r.status === 'critical' ? 0 : Math.max(0, (r.daysRemaining ?? cfg.daysWarningThreshold) - cfg.criticalDays) * 86400000;\n  return new Date(Date.now() + Math.min(ms, 7 * 86400000)).toISOString();\n};\nconst hubspotTasks = recordable.slice(0, 100).map((r) => ({\n  properties: {\n    hs_task_subject: `[${r.status.toUpperCase()}] TLS/security: ${r.domain}${r.port === 443 ? '' : `:${r.port}`} (${expiry(r)})`.slice(0, 250),\n    hs_task_body: `<p><strong>${esc(r.domain)}</strong> · ${esc(r.role)}${r.owner ? ` · owner ${esc(r.owner)}` : ''}</p><ul>${r.findings.map((f) => `<li>[${f.severity}] ${esc(f.message)}</li>`).join('')}</ul><p>Valid to: ${esc(r.validTo || 'n/a')} · Issuer: ${esc(r.issuer || 'n/a')} · Protocol: ${esc(r.protocol || 'n/a')}</p><p>Logged by n8n run ${esc(cfg.runId)}.</p>`,\n    hs_task_status: 'NOT_STARTED',\n    hs_task_priority: r.status === 'critical' ? 'HIGH' : 'MEDIUM',\n    hs_task_type: 'TODO',\n    hs_timestamp: due(r),\n    ...(cfg.hubspotTaskOwnerId ? { hubspot_owner_id: cfg.hubspotTaskOwnerId } : {}),\n  },\n}));\n\n// ── Notion pages ──\nconst rt = (s) => [{ type: 'text', text: { content: String(s ?? '').slice(0, 1900) } }];\nconst notionPages = recordable.slice(0, 50).map((r) => ({\n  parent: { database_id: cfg.notionDatabaseId },\n  properties: { [cfg.notionTitleProperty]: { title: rt(`${ICON[r.status]} ${r.domain}${r.port === 443 ? '' : `:${r.port}`} · ${r.status} · ${expiry(r)} · ${day}`) } },\n  children: [\n    { object: 'block', type: 'callout', callout: { rich_text: rt(`${r.status.toUpperCase()} · role ${r.role}${r.owner ? ` · owner ${r.owner}` : ''}`), icon: { type: 'emoji', emoji: r.status === 'critical' ? '🚨' : '⚠️' } } },\n    { object: 'block', type: 'heading_2', heading_2: { rich_text: rt('Findings') } },\n    ...r.findings.slice(0, 40).map((f) => ({ object: 'block', type: 'to_do', to_do: { rich_text: rt(`[${f.severity}] ${f.message}`), checked: false } })),\n    { object: 'block', type: 'heading_2', heading_2: { rich_text: rt('Certificate') } },\n    { object: 'block', type: 'paragraph', paragraph: { rich_text: rt(`Valid to: ${r.validTo || 'n/a'} · Issuer: ${r.issuer || 'n/a'} · Protocol: ${r.protocol || 'n/a'} · Run ${cfg.runId}`) } },\n  ],\n}));\n\nreturn [{ json: {\n  alertCount: alerts.length, counts: ev.counts, mode: ev.mode,\n  slackBody, webhookBody, hubspotTasks, notionPages,\n  recordable: recordable.map((r) => r.domain), suppressedRecords: alerts.length - recordable.length,\n} }];\n"
+      },
+      "id": "4d95d864-4f83-5540-974c-0723f3aa9e8f",
+      "name": "Compose Alerts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1480,
+        120
+      ],
+      "notes": "Slack blocks, webhook JSON, HubSpot tasks, Notion pages.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "3be64164-0bcb-5e14-ad65-c02ad7376843",
+              "leftValue": "={{ $json.alertCount }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "1131507f-f00e-5da3-b881-75072e490138",
+      "name": "Alerts Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1700,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "8bbaffb1-c663-5265-921c-bc8e40436cfb",
+              "leftValue": "={{ $('Config & Safety Gate').first().json.config.dryRun || $('Config & Safety Gate').first().json.config.sandboxMode }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c2f97d5a-e5db-52b0-a92a-13f6b0020312",
+      "name": "Dry Run?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1920,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "d8eb9f74-cf78-56b9-8d56-5513f5ac83ca",
+              "leftValue": "={{ $('Config & Safety Gate').first().json.config.slackEnabled }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "117baa70-e442-546b-a9a0-4f9437c8557e",
+      "name": "Slack Enabled?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2140,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('Compose Alerts').first().json.slackBody) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "29067c56-3711-559b-a8ee-ddb83089e504",
+      "name": "Slack: Post Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2360,
+        40
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "notes": "Slack incoming webhook.",
+      "notesInFlow": false,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "6953a04b-9e06-544f-854a-44eab45847bd",
+              "leftValue": "={{ $('Config & Safety Gate').first().json.config.webhookEnabled }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "8866761b-fe5b-5c43-9f07-5edd3e4cbcd2",
+      "name": "Webhook Enabled?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2580,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ALERT_WEBHOOK_URL }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.ALERT_WEBHOOK_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('Compose Alerts').first().json.webhookBody) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "afe36929-e234-5d67-b40e-52d9d4e9ddb9",
+      "name": "Webhook: Post Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2800,
+        40
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "notes": "Generic JSON webhook (PagerDuty bridge, Teams relay, SIEM, …).",
+      "notesInFlow": false,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "d0ecb920-8d61-5b73-9567-c84e999088ba",
+              "leftValue": "={{ $('Config & Safety Gate').first().json.config.hubspotEnabled }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "ae3c4a87-db90-57c2-8ec3-bff94efde6b1",
+              "leftValue": "={{ $('Compose Alerts').first().json.hubspotTasks.length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "6e93a3c1-d73b-56db-9b1e-40cc455ffecd",
+      "name": "HubSpot Enabled?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        3020,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config & Safety Gate').first().json.config.hubspotBaseUrl }}/crm/v3/objects/tasks/batch/create",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.HUBSPOT_PRIVATE_APP_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ inputs: $('Compose Alerts').first().json.hubspotTasks }) }}",
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "id": "16cb9f59-8c3d-56bd-bc15-a1433baf03fc",
+      "name": "HubSpot: Create Tasks",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3240,
+        40
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "notes": "One task per alerting domain. Grant the write scope HubSpot lists for the Tasks API.",
+      "notesInFlow": false,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "898c66f2-8f21-5709-954e-ee68ddb16a82",
+              "leftValue": "={{ $('Config & Safety Gate').first().json.config.notionEnabled }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "de2823f5-db92-57d5-b4a6-3379bb5e0e94",
+              "leftValue": "={{ $('Compose Alerts').first().json.notionPages.length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "e003cfd1-f919-532c-89e1-449fc920d834",
+      "name": "Notion Enabled?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        3460,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// One item per Notion page.\nreturn $('Compose Alerts').first().json.notionPages.map((page) => ({ json: { page } }));\n"
+      },
+      "id": "4c916748-5ef3-583a-98bd-50701e93ea0f",
+      "name": "Emit Notion Pages",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3680,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.notion.com/v1/pages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.NOTION_API_KEY }}"
+            },
+            {
+              "name": "Notion-Version",
+              "value": "2022-06-28"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.page) }}",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 400
+            }
+          },
+          "timeout": 20000
+        }
+      },
+      "id": "418b1c80-549d-5fd9-96c5-35f3537fff3c",
+      "name": "Notion: Create Incident Page",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3900,
+        40
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "notes": "Share the database with the integration.",
+      "notesInFlow": false,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "bca03ed3-7199-5c10-9b58-c44ea82c1a3d",
+              "leftValue": "={{ $('Config & Safety Gate').first().json.config.slackPostAllClear && $('Config & Safety Gate').first().json.config.slackEnabled && !$('Config & Safety Gate').first().json.config.dryRun }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "f31ec438-d3a2-59d9-8948-15d451b3f347",
+      "name": "Post All-Clear?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1920,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('Compose Alerts').first().json.slackBody) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "622f5159-575f-598e-8be5-a909ffe49c54",
+      "name": "Slack: Post All-Clear",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2140,
+        380
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "notes": "Optional daily heartbeat.",
+      "notesInFlow": false,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─────────────────────────────────────────────────────────────────────────────\n// Execution Summary & Audit\n// Final record on every path: domains checked, per-domain status and finding\n// codes, and what each channel did. Contains no secrets and no endpoint URLs.\n// ─────────────────────────────────────────────────────────────────────────────\nconst cfg = $('Config & Safety Gate').first().json.config;\nconst one = (n) => { try { return $(n).first().json; } catch (e) { return null; } };\nconst all = (n) => { try { return $(n).all().map((i) => i.json); } catch (e) { return []; } };\nconst ran = (n) => all(n).length > 0;\nconst ok = (n) => all(n).filter((x) => !x.error).length;\n\nconst list = one('Load & Normalize Domain List') || {};\nconst ev = one('Evaluate Findings');\nconst cmp = one('Compose Alerts');\nconst channels = {\n  slack: ran('Slack: Post Alert') ? (ok('Slack: Post Alert') ? 'sent' : 'failed') : ran('Slack: Post All-Clear') ? (ok('Slack: Post All-Clear') ? 'all_clear_sent' : 'failed') : 'not_sent',\n  webhook: ran('Webhook: Post Alert') ? (ok('Webhook: Post Alert') ? 'sent' : 'failed') : 'not_sent',\n  hubspot: ran('HubSpot: Create Tasks') ? (ok('HubSpot: Create Tasks') ? `created ${all('HubSpot: Create Tasks').reduce((n, x) => n + (Array.isArray(x.results) ? x.results.length : 0), 0)}` : 'failed') : 'not_sent',\n  notion: ran('Notion: Create Incident Page') ? `created ${ok('Notion: Create Incident Page')} of ${all('Notion: Create Incident Page').length}` : 'not_sent',\n};\n\nlet outcome = 'completed';\nif (!list.count) outcome = 'no_domains';\nelse if (!ev) outcome = 'inspection_not_run';\nelse if (!ev.counts.alerting) outcome = 'all_clear';\nelse if (cfg.sandboxMode) outcome = 'alerts_found_sandbox';\nelse if (cfg.dryRun) outcome = 'alerts_found_dry_run';\nelse if (Object.values(channels).some((s) => s === 'failed')) outcome = 'alerts_found_delivery_failed';\nelse if (Object.values(channels).every((s) => s === 'not_sent')) outcome = 'alerts_found_no_channel_configured';\nelse outcome = 'alerts_found_notified';\n\nreturn [{ json: {\n  workflow: 'n8n-outbound-sender-domain-ssl-expiry-watchdog',\n  runId: cfg.runId, executionMode: cfg.executionMode, finishedAt: new Date().toISOString(), outcome,\n  safety: { sandboxMode: cfg.sandboxMode, dryRun: cfg.dryRun, channels: cfg.alertChannels, allowPrivateTargets: cfg.allowPrivateTargets },\n  thresholds: { warningDays: cfg.daysWarningThreshold, criticalDays: cfg.criticalDays, alertMinSeverity: cfg.alertMinSeverity, headerSeverity: cfg.headerSeverity },\n  domainList: { source: list.source || null, checked: list.count || 0, rejected: list.rejected || [] },\n  inspection: ev ? { mode: ev.mode, durationMs: ev.durationMs, counts: ev.counts } : null,\n  domains: ev ? ev.results.map((r) => ({ domain: r.domain, port: r.port, status: r.status, alert: r.alert, daysRemaining: r.daysRemaining, findings: r.findings.map((f) => `${f.severity}:${f.code}`) })) : [],\n  notifications: { ...channels, recordsSuppressedByRepeatWindow: cmp ? cmp.suppressedRecords : 0 },\n} }];\n"
+      },
+      "id": "b3aba2e6-897d-5038-986b-07f3958c6156",
+      "name": "Execution Summary & Audit",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4120,
+        300
+      ],
+      "notes": "Final record on every path.",
+      "notesInFlow": false
+    }
+  ],
+  "connections": {
+    "Daily Watchdog Schedule": {
+      "main": [
+        [
+          {
+            "node": "Config & Safety Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Test Trigger": {
+      "main": [
+        [
+          {
+            "node": "Config & Safety Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config & Safety Gate": {
+      "main": [
+        [
+          {
+            "node": "Domain Source: URL?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Domain Source: URL?": {
+      "main": [
+        [
+          {
+            "node": "HTTP: Fetch Domain List",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Load & Normalize Domain List",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP: Fetch Domain List": {
+      "main": [
+        [
+          {
+            "node": "Load & Normalize Domain List",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load & Normalize Domain List": {
+      "main": [
+        [
+          {
+            "node": "Has Domains?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Domains?": {
+      "main": [
+        [
+          {
+            "node": "Sandbox Mode?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Execution Summary & Audit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sandbox Mode?": {
+      "main": [
+        [
+          {
+            "node": "Mock Inspection Results",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Security Inspection (TLS + Headers)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mock Inspection Results": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Findings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Security Inspection (TLS + Headers)": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Findings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Findings": {
+      "main": [
+        [
+          {
+            "node": "Compose Alerts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compose Alerts": {
+      "main": [
+        [
+          {
+            "node": "Alerts Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alerts Found?": {
+      "main": [
+        [
+          {
+            "node": "Dry Run?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Post All-Clear?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dry Run?": {
+      "main": [
+        [
+          {
+            "node": "Execution Summary & Audit",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Slack Enabled?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack Enabled?": {
+      "main": [
+        [
+          {
+            "node": "Slack: Post Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Webhook Enabled?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack: Post Alert": {
+      "main": [
+        [
+          {
+            "node": "Webhook Enabled?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Enabled?": {
+      "main": [
+        [
+          {
+            "node": "Webhook: Post Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "HubSpot Enabled?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook: Post Alert": {
+      "main": [
+        [
+          {
+            "node": "HubSpot Enabled?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HubSpot Enabled?": {
+      "main": [
+        [
+          {
+            "node": "HubSpot: Create Tasks",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Notion Enabled?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HubSpot: Create Tasks": {
+      "main": [
+        [
+          {
+            "node": "Notion Enabled?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notion Enabled?": {
+      "main": [
+        [
+          {
+            "node": "Emit Notion Pages",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Execution Summary & Audit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Emit Notion Pages": {
+      "main": [
+        [
+          {
+            "node": "Notion: Create Incident Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notion: Create Incident Page": {
+      "main": [
+        [
+          {
+            "node": "Execution Summary & Audit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Post All-Clear?": {
+      "main": [
+        [
+          {
+            "node": "Slack: Post All-Clear",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Execution Summary & Audit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack: Post All-Clear": {
+      "main": [
+        [
+          {
+            "node": "Execution Summary & Audit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {
+    "HTTP: Fetch Domain List": [
+      {
+        "json": {
+          "domains": [
+            {
+              "domain": "sender.example.com",
+              "role": "sending_domain_web",
+              "owner": "team-deliverability"
+            },
+            {
+              "domain": "track.example.com",
+              "role": "click_tracking",
+              "owner": "team-marketing-ops"
+            }
+          ]
+        }
+      }
+    ],
+    "Slack: Post Alert": [
+      {
+        "json": {
+          "data": "ok"
+        }
+      }
+    ],
+    "Slack: Post All-Clear": [
+      {
+        "json": {
+          "data": "ok"
+        }
+      }
+    ],
+    "Webhook: Post Alert": [
+      {
+        "json": {
+          "received": true,
+          "id": "evt-synthetic-0001"
+        }
+      }
+    ],
+    "HubSpot: Create Tasks": [
+      {
+        "json": {
+          "status": "COMPLETE",
+          "results": [
+            {
+              "id": "61000000001",
+              "properties": {
+                "hs_task_status": "NOT_STARTED"
+              }
+            },
+            {
+              "id": "61000000002",
+              "properties": {
+                "hs_task_status": "NOT_STARTED"
+              }
+            }
+          ],
+          "startedAt": "2026-11-16T06:00:01.000Z",
+          "completedAt": "2026-11-16T06:00:02.000Z"
+        }
+      }
+    ],
+    "Notion: Create Incident Page": [
+      {
+        "json": {
+          "object": "page",
+          "id": "1a2b3c4d-0000-4000-8000-000000000001",
+          "url": "https://www.notion.so/1a2b3c4d000040008000000000000001"
+        }
+      },
+      {
+        "json": {
+          "object": "page",
+          "id": "1a2b3c4d-0000-4000-8000-000000000002",
+          "url": "https://www.notion.so/1a2b3c4d000040008000000000000002"
+        }
+      }
+    ]
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "UTC",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveExecutionProgress": false,
+    "callerPolicy": "workflowsFromSameOwner",
+    "executionTimeout": 900
+  },
+  "versionId": "9057d2f8-1b56-5c1d-b368-c339c09982cd",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}
