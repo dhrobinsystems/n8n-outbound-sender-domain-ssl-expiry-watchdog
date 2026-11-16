@@ -58,6 +58,8 @@ Findings are graded `critical`, `warning` or `info`. Anything at or above `ALERT
 
 ## 2. Architecture and Data Flow
 
+![Workflow Overview](workflow-overview.png)
+
 ```mermaid
 flowchart LR
     SCH[Daily Watchdog Schedule<br/>06:00 UTC] --> CFG
